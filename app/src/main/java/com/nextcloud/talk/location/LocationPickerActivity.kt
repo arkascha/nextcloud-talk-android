@@ -8,15 +8,16 @@
 package com.nextcloud.talk.location
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.SearchManager
-import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.drawable.ColorDrawable
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
+import android.location.LocationRequest
 import android.os.Bundle
 import android.text.InputType
 import android.util.Log
@@ -28,6 +29,9 @@ import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.widget.SearchView
 import androidx.core.content.PermissionChecker
 import androidx.core.content.res.ResourcesCompat
+import androidx.core.location.LocationListenerCompat
+import androidx.core.location.LocationManagerCompat
+import androidx.core.location.LocationRequestCompat
 import androidx.core.view.MenuItemCompat
 import androidx.preference.PreferenceManager
 import autodagger.AutoInjector
@@ -92,7 +96,9 @@ class LocationPickerActivity :
     var geocodingResult: GeocodingResult? = null
 
     var myLocation: GeoPoint = GeoPoint(COORDINATE_ZERO, COORDINATE_ZERO)
-    private var locationManager: LocationManager? = null
+    private lateinit var locationManager: LocationManager
+    private lateinit var locationRequest: LocationRequestCompat
+    private lateinit var locationListener: LocationListenerCompat
     private lateinit var locationOverlay: MyLocationNewOverlay
 
     var moveToCurrentLocation: Boolean = true
@@ -114,6 +120,8 @@ class LocationPickerActivity :
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         NextcloudTalkApplication.sharedApplication!!.componentApplication.inject(this)
+
+        locationManager = context.getSystemService(LOCATION_SERVICE) as LocationManager
 
         roomToken = intent.getStringExtra(KEY_ROOM_TOKEN)!!
         chatApiVersion = intent.getIntExtra(KEY_CHAT_API_VERSION, 1)
@@ -201,7 +209,9 @@ class LocationPickerActivity :
         super.onStop()
 
         try {
-            locationManager!!.removeUpdates(this)
+            LocationManagerCompat.removeUpdates(locationManager, locationListener)
+        } catch (e: SecurityException) {
+            Log.e(TAG, "missing permissions when trying to remove updates for location Manager", e)
         } catch (e: Exception) {
             Log.e(TAG, "error when trying to remove updates for location Manager", e)
         }
@@ -210,7 +220,7 @@ class LocationPickerActivity :
     }
 
     private fun initSearchView() {
-        val searchManager = getSystemService(Context.SEARCH_SERVICE) as SearchManager
+        val searchManager = getSystemService(SEARCH_SERVICE) as SearchManager
         if (searchItem != null) {
             searchView = MenuItemCompat.getActionView(searchItem) as SearchView
             searchView?.maxWidth = Int.MAX_VALUE
@@ -246,10 +256,12 @@ class LocationPickerActivity :
         binding.map.setTileSource(TileSourceFactory.MAPNIK)
         binding.map.onResume()
 
-        locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
-
         if (!isLocationPermissionsGranted()) {
             requestLocationPermissions()
+        } else if (!isLocationServiceEnabled()) {
+            askToEnableLocationService()
+        } else if (!isLocationProviderGpsEnabled()) {
+            askToEnableLocationService()
         } else {
             requestLocationUpdates()
         }
@@ -323,6 +335,37 @@ class LocationPickerActivity :
         )
     }
 
+    private fun isLocationServiceEnabled(): Boolean =
+        LocationManagerCompat.isLocationEnabled(locationManager)
+
+    private fun isLocationProviderGpsEnabled(): Boolean =
+        locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)
+
+    private fun askToEnableLocationService() {
+        locationRequest = LocationRequestCompat.Builder(5000L)
+            .setQuality(LocationRequestCompat.QUALITY_HIGH_ACCURACY)
+            .setMinUpdateDistanceMeters(0f)
+            .setMinUpdateIntervalMillis(5000L)
+            .setMaxUpdateDelayMillis(5000L)
+            .build()
+
+        locationListener = object : LocationListenerCompat {
+            override fun onFlushComplete(requestCode: Int) {}
+            override fun onLocationChanged(locations: List<Location>) {
+                Log.d(TAG, "onLocationChanged: $locations")
+            }
+            override fun onLocationChanged(location: Location) {
+                Log.d(TAG, "onLocationChanged: $location")
+            }
+            override fun onProviderDisabled(provider: String) {
+                Log.d(TAG, "onProviderDisabled: $provider")
+            }
+            override fun onProviderEnabled(provider: String) {
+                Log.d(TAG, "onProviderEnabled: $provider")
+            }
+        }
+    }
+
     private fun delayedMapListener() =
         DelayedMapListener(
             object : MapListener {
@@ -364,8 +407,8 @@ class LocationPickerActivity :
     private fun requestLocationUpdates() {
         try {
             when {
-                locationManager!!.isProviderEnabled(LocationManager.NETWORK_PROVIDER) -> {
-                    locationManager!!.requestLocationUpdates(
+                locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER) -> {
+                    locationManager.requestLocationUpdates(
                         LocationManager.NETWORK_PROVIDER,
                         MIN_LOCATION_UPDATE_TIME,
                         MIN_LOCATION_UPDATE_DISTANCE,
@@ -373,8 +416,8 @@ class LocationPickerActivity :
                     )
                 }
 
-                locationManager!!.isProviderEnabled(LocationManager.GPS_PROVIDER) -> {
-                    locationManager!!.requestLocationUpdates(
+                locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER) -> {
+                    locationManager.requestLocationUpdates(
                         LocationManager.GPS_PROVIDER,
                         MIN_LOCATION_UPDATE_TIME,
                         MIN_LOCATION_UPDATE_DISTANCE,
